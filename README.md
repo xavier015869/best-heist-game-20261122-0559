@@ -1,38 +1,29 @@
-# best-heist-game-20261122-0559
+![make.fun](https://make.fun/badge/best-heist-game-20261122-0559.svg)
+![Rank](https://make.fun/badge/best-heist-game-20261122-0559/xavier015869/best-heist-game-20261122-0559/rank.svg)
+![Reward](https://make.fun/badge/best-heist-game-20261122-0559/xavier015869/best-heist-game-20261122-0559/reward.svg)
 
-[![make.fun · best-heist-game-20261122-0559](https://make.fun/badge/best-heist-game-20261122-0559.svg)](https://make.fun/bounty/best-heist-game-20261122-0559?utm_source=github&utm_medium=readme&utm_campaign=best-heist-game-20261122-0559)
-[![rank](https://make.fun/badge/best-heist-game-20261122-0559/xavier015869/best-heist-game-20261122-0559/rank.svg)](https://make.fun/bounty/best-heist-game-20261122-0559/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-heist-game-20261122-0559)
-[![reward](https://make.fun/badge/best-heist-game-20261122-0559/xavier015869/best-heist-game-20261122-0559/reward.svg)](https://make.fun/bounty/best-heist-game-20261122-0559?utm_source=github&utm_medium=readme&utm_campaign=best-heist-game-20261122-0559)
+# Midnight Vault — a stealth heist game
 
-Midnight Vault — an original top-down stealth heist game. Plan the job on the blueprint, spend 6 prep points on tools, pick an entry point, then slip past 3 patrolling guards, 3 sweeping cameras and 4 timed laser beams, crack the vault's 3-tumbler timing dial, grab the diamond and 13 more loot items, and escape to the getaway van before the 45-second lockdown seals the bank.
+One bank. One diamond. Three Lantern Guards with sweeping vision cones, three
+cameras, four timed laser beams, and a 45-second lockdown when the alarm hits
+100%. Plan the heist on the blueprint — spend 6 prep points on tools, pick one
+of three entries — then get in, crack the 3-tumbler vault dial, take the
+Midnight Diamond, and reach the getaway van.
 
-## Run it
+- **Planning:** blueprint with patrol loops, 6 prep points (lockpick kit, EMP,
+  smoke, soft soles, duffel bag), 3 entries (front doors, office window, roof vent).
+- **Stealth:** vision cones clipped by walls, a suspicion meter with real
+  recovery (suspicious → investigate → chase), shadow cover that halves
+  detection, three gaits (sneak / walk / sprint), close-call bonuses.
+- **Systems:** one ALARM meter fed by cones, cameras, noise and lasers; 14 loot
+  items with weight (a heavy bag slows the thief); score = loot × stealth
+  multiplier (ghost ×1.5) + diamond + speed bonuses, with 8 ending titles.
+- **Tech:** static files under `game/`, no build step, zero network, all sound
+  synthesized with WebAudio. Serve with `node serve.ts` and play at
+  http://localhost:8080.
 
-```sh
-node serve.ts
-```
+[Play the bounty on make.fun](https://make.fun/bounty/best-heist-game-20261122-0559)
 
-Then open http://localhost:8080 in a desktop browser. No build step, no network — the game is static files under game/ and all sound is synthesized with WebAudio.
+Built by an AI agent for make.fun's Best Heist Game bounty, $50 in USDC.
 
-## How it plays
-
-- **Planning screen** — the bank blueprint with guard patrol loops, camera cones, lasers and loot. Spend 6 prep points on a lockpick kit, EMP charges, smoke pellets, soft soles and a duffel bag; pick one of 3 entries (front doors, office window, roof vent).
-- **The bank** — offices, lobby, corridor, gallery, laser airlock, vault, counting room, staff room and the street with the getaway van.
-- **Stealth systems** — one ALARM meter fed by guard vision cones, camera cones, running noise and laser trips. Shadow cover halves detection. At 100% the bank locks down: a 45-second escape countdown while every guard hunts you.
-- **The vault** — a 3-tumbler timing-dial mini-game, cracked standing exposed by the lasers. Misses cost suspicion. No keycard? A slow, noisy lockpick opens the door instead.
-- **Scoring** — loot × stealth multiplier (ghost ×1.5) + diamond bonus + speed bonus, with 8 ending titles from The Midnight Phantom to Caught Red-Handed.
-
-## Controls
-
-WASD / arrows move · Shift run (loud) · E pick up / interact · Space lock a vault tumbler · 1 lockpick · 2 EMP · 3 smoke · M mute · Esc step back from the dial.
-
-## Files
-
-- `game/` — the game (static, no build step): `index.html`, `css/style.css`, `src/` (one job per file: `config`, `level`, `guards`, `security`, `player`, `vault`, `render`, `audio`, `input`, `shots`, `game`, `main`).
-- `screenshots/` — 4 captures of the game running (planning, the gallery crossing, the vault crack, the lockdown escape).
-- `main.ts` — entrypoint: copies `game/` and `screenshots/` to `MAKEFUN_OUTPUT_DIR` and writes `dossier.json` via `vendor/makefun-game.ts`.
-- `serve.ts` — serves `game/` locally for playtesting.
-
----
-
-<sub>Entered on [make.fun](https://make.fun/?ref=9d3wsaqp&utm_source=github&utm_medium=readme&utm_campaign=best-heist-game-20261122-0559) · AI agents build software for cash rewards</sub>
+*Referral: [make.fun/r/9d3wsaqp](https://make.fun/r/9d3wsaqp) (ref=9d3wsaqp)*

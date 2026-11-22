@@ -1,88 +1,103 @@
-// shots.js — deterministic staged scenes for the ?shot= screenshots.
-// Each stage freezes the game at a fixed time so the capture is reproducible.
-import { VAULT_DIAL } from './config.js';
+// Midnight Vault — screenshot staging: ?shot=plan|action|vault|escape sets up a
+// deterministic scene and freezes the simulation so the screenshot is a stable
+// render of the game's own code. The cover (action) shows the thief crossing
+// the gallery with guard cones, camera cones, lasers, the diamond and the HUD.
 
-function freezeGuards(game, spots) {
-  game.guards.forEach((g, i) => {
-    const s = spots[i];
-    g.x = s.x; g.y = s.y;
-    g.facing = s.facing;
-    g.pause = 999; // dwell in place, sweeping the cone
-    g.mode = 'patrol';
-  });
+import { TILE } from './config.js';
+
+// Freeze the game clock at a moment when two laser beams are live.
+const SHOT_TIME = 0.5;
+
+function placeThief(game, tx, ty) {
+  game.player.x = (tx + 0.5) * TILE;
+  game.player.y = (ty + 0.5) * TILE;
+  game.player.dir = 0;
 }
 
-export function stageShot(game, kind) {
-  if (kind === 'plan' || kind === 'start') {
-    game.state = 'plan';
-    game.entry = 'vent';
-    game.prep = { lockpick: 1, emp: 1, smoke: 1, soles: 0, duffel: 0 };
-    game.prepLeft = 2;
-    game.time = 12.5;
+function aimGuardAt(game, index, tx, ty) {
+  const g = game.guards[index];
+  if (!g) return;
+  g.dir = Math.atan2((ty + 0.5) * TILE - g.y, (tx + 0.5) * TILE - g.x);
+  g.suspicion = 0;
+  g.state = 'patrol';
+}
+
+export function applyShot(game, kind) {
+  game.time = SHOT_TIME;
+  if (kind === 'plan') {
+    game.phase = 'plan';
     return;
   }
-
-  // Every play-stage starts a real heist, then re-poses it.
-  game.entry = 'front';
+  // Every other shot starts a heist, then stages the scene.
   game.startHeist();
-  game.time = 0; // fixed time: lasers 1+2 live, cameras mid-sweep
+  game.time = SHOT_TIME;
+  game.frozen = true;
 
-  if (kind === 'action' || kind === 'play') {
-    game.player.x = 1000; game.player.y = 260;
-    game.player.dir = Math.PI; // crossing the gallery, heading west
-    game.player.loot = ['cash1', 'watch1'];
-    game.player.weight = 2;
-    game.player.hasKeycard = true;
-    game.alarm.value = 38; game.alarm.peak = 38;
-    game.elapsed = 95;
-    freezeGuards(game, [
-      { x: 900, y: 390, facing: -0.6 },
-      { x: 1150, y: 200, facing: Math.PI },
-      { x: 900, y: 500, facing: -2.2 },
-    ]);
+  if (kind === 'action') {
+    // Cover: the thief crosses the gallery, a guard cone sweeps toward them,
+    // the gallery camera watches, lasers blink in the airlock, the diamond
+    // glows in the vault, and the alarm meter reads 35%.
+    game.plan.entry = 'front';
+    placeThief(game, 24, 14);
+    game.player.dir = Math.PI;
+    game.alarm = 35;
+    // Bishop (gallery guard) patrols near the thief, cone aimed at them.
+    const bishop = game.guards[1];
+    bishop.x = (21.5) * TILE;
+    bishop.y = (14.5) * TILE;
+    bishop.dir = 0;
+    bishop.suspicion = 62;
+    bishop.state = 'suspicious';
+    // Rook's cone sweeps the lobby; Knight watches the offices.
+    aimGuardAt(game, 0, 15, 15);
+    aimGuardAt(game, 2, 5, 14);
+    // Gallery camera aimed across the room.
+    game.security.cameras[1].angle = Math.PI * 0.85;
+    game.security.cameras[0].angle = Math.PI * 0.6;
     return;
   }
 
   if (kind === 'vault') {
-    game.player.x = VAULT_DIAL.x; game.player.y = VAULT_DIAL.y;
+    // The thief stands at the safe, the crack dial open on tumbler 2.
+    placeThief(game, 24, 4.5);
     game.player.dir = -Math.PI / 2;
-    game.player.loot = ['cash1', 'watch1', 'cashpile', 'bonds'];
-    game.player.weight = 8;
-    game.player.hasKeycard = true;
-    game.alarm.value = 55; game.alarm.peak = 55;
-    game.elapsed = 150;
-    game.vault.start(7);
-    game.vault.tumblers = 1;
-    game.vault.angle = game.vault.zone - 0.12; // needle just entering the green
-    freezeGuards(game, [
-      { x: 500, y: 390, facing: -Math.PI / 2 },
-      { x: 1150, y: 200, facing: Math.PI },
-      { x: 900, y: 500, facing: -2.2 },
-    ]);
+    game.alarm = 58;
+    game.vault.active = true;
+    game.vault.tumbler = 1;
+    game.vault.angle = 1.2;
+    game.vault.zoneCenter = 1.1;
+    game.vault.speed = 2.6;
+    // Vault camera sweeps the vault door.
+    game.security.cameras[2].angle = Math.PI / 2;
     return;
   }
 
-  if (kind === 'escape' || kind === 'end') {
-    game.vault.open = true;
-    game.player.x = 320; game.player.y = 660;
-    game.player.dir = Math.PI; // running west along the street, toward the van
-    game.player.loot = ['cash1', 'watch1', 'cashpile', 'bonds', 'painting', 'diamond'];
-    game.player.weight = 12;
-    game.player.hasKeycard = true;
-    game.alarm.value = 100; game.alarm.peak = 100;
-    game.alarm.lockdown = true;
-    game.alarm.lockdownLeft = 32;
-    game.elapsed = 210;
-    game.guards.forEach((g, i) => {
-      g.mode = 'chase';
-      g.pause = 0;
-    });
-    game.guards[0].x = 640; game.guards[0].y = 560; game.guards[0].facing = Math.PI / 2;
-    game.guards[1].x = 700; game.guards[1].y = 470; game.guards[1].facing = Math.PI / 2;
-    game.guards[2].x = 980; game.guards[2].y = 560; game.guards[2].facing = Math.PI / 2;
+  if (kind === 'escape') {
+    // Lockdown escape: the diamond is taken, alarm at 100, the thief sprints
+    // for the van while the guards chase.
+    const diamond = game.level.loot.find((l) => l.id === 'diamond');
+    diamond.taken = true;
+    game.player.loot.push('diamond');
+    game.player.weight += diamond.weight;
+    game.hasDiamond = true;
+    game.alarm = 100;
+    game.lockdown = true;
+    game.lockdownLeft = 31;
+    placeThief(game, 20, 17.5);
+    game.player.dir = 0;
+    game.player.sprinting = true;
+    for (const g of game.guards) {
+      g.state = 'chase';
+      g.suspicion = 100;
+      g.lastSeen = { x: game.player.x, y: game.player.y, at: game.time };
+    }
+    game.guards[0].x = 15 * TILE;
+    game.guards[0].y = 15 * TILE;
+    game.guards[1].x = 22 * TILE;
+    game.guards[1].y = 15 * TILE;
     return;
   }
 
-  // Unknown ?shot= value: fall back to the action frame.
-  stageShot(game, 'action');
+  // Unknown shot kind: just play the opening frame.
+  placeThief(game, 15, 16);
 }

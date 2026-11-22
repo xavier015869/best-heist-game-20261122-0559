@@ -1,102 +1,178 @@
-// level.js — the bank itself: walls, rooms, collision and line of sight.
-// The map is one static floor plan; everything here is pure geometry.
-import { ROOMS, SHADOWS, WORLD } from './config.js';
+// Midnight Vault — the bank floor plan: walls, rooms, doors, shadows, patrol routes,
+// cameras, lasers and loot placement. All geometry in tile units (1 tile = 32 px).
 
-// Every solid rectangle. Door gaps are simply absent wall segments.
-export const WALLS = [
-  // outer shell
-  { x: 0, y: 0, w: 1280, h: 20 }, { x: 0, y: 700, w: 1280, h: 20 },
-  { x: 0, y: 0, w: 20, h: 720 }, { x: 1260, y: 0, w: 20, h: 720 },
-  // street / bank front wall (y=600), front-door gap x 600-680
-  { x: 20, y: 600, w: 580, h: 20 }, { x: 680, y: 600, w: 580, h: 20 },
-  // lobby side walls + north wall (y=430), door gap x 610-670
-  { x: 520, y: 430, w: 20, h: 170 }, { x: 740, y: 430, w: 20, h: 170 },
-  { x: 520, y: 430, w: 90, h: 20 }, { x: 670, y: 430, w: 90, h: 20 },
-  // corridor north wall (y=350): gaps offices 250-310, airlock 610-670, gallery 950-1010
-  { x: 20, y: 350, w: 230, h: 20 }, { x: 310, y: 350, w: 300, h: 20 },
-  { x: 670, y: 350, w: 280, h: 20 }, { x: 1010, y: 350, w: 250, h: 20 },
-  // corridor south wall (y=430): gaps staff 250-310, lobby 610-670, counting 950-1010
-  { x: 20, y: 430, w: 230, h: 20 }, { x: 310, y: 430, w: 300, h: 20 },
-  { x: 670, y: 430, w: 280, h: 20 }, { x: 1010, y: 430, w: 250, h: 20 },
-  // offices: east wall + interior divider (door gap y 120-180).
-  // The divider sits at x=230 so the corridor doorway (gap x 250-310) stays
-  // a clean 60px passage: the thief's circle needs 12px clear of every wall.
-  { x: 480, y: 20, w: 20, h: 330 },
-  { x: 230, y: 20, w: 20, h: 100 }, { x: 230, y: 180, w: 20, h: 140 },
-  // gallery: west wall + two pillars as cover
-  { x: 800, y: 20, w: 20, h: 330 },
-  { x: 950, y: 150, w: 30, h: 30 }, { x: 1100, y: 240, w: 30, h: 30 },
-  // vault block: side walls + vault door wall (y=260), security-door gap x 610-670
-  { x: 520, y: 20, w: 20, h: 330 }, { x: 740, y: 20, w: 20, h: 330 },
-  { x: 520, y: 260, w: 90, h: 20 }, { x: 670, y: 260, w: 90, h: 20 },
-  // counting room: west wall + teller counter
-  { x: 800, y: 430, w: 20, h: 170 },
-  { x: 950, y: 500, w: 180, h: 24 },
-  // staff room: east wall + crates
-  { x: 480, y: 430, w: 20, h: 170 },
-  { x: 150, y: 500, w: 60, h: 40 }, { x: 300, y: 520, w: 60, h: 40 },
-];
+import { TILE, LOOT_TABLE } from './config.js';
 
-export function pointInRect(px, py, r) {
-  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+// A wall is {x, y, w, h} in tiles. The bank is a rectangle with interior dividers;
+// every gap in a divider is a doorway the thief and guards can walk through.
+function buildWalls() {
+  const walls = [];
+  const add = (x, y, w, h) => walls.push({ x, y, w, h });
+  // Outer shell.
+  add(0, 0, 30, 1); // north
+  add(0, 19, 30, 1); // south (street edge is open at the van door below)
+  add(0, 0, 1, 20); // west
+  add(29, 0, 1, 20); // east
+  // Divider between the vault wing (top) and the airlock (y 8-10). The vault
+  // door tile at (24,7) is a wall until the door opens; the rest is solid.
+  add(1, 7, 19, 1); // west part, x 1-19
+  add(20, 7, 9, 1); // east part, x 20-28 (includes the vault door tile)
+  // Vault room walls: vault occupies x 20-28, y 1-6; its door sits at x 24, y 7.
+  add(19, 1, 1, 6); // vault west wall
+  // Divider between counting room (west, y 8-10) and corridor.
+  add(1, 11, 8, 1); // gap at x=9 (door from counting room to corridor)
+  // Divider between gallery (east, y 12-16) and corridor.
+  add(20, 11, 9, 1); // gap at x=19 is the gallery door (shared corridor gap)
+  // Divider between offices (west, y 12-16) and lobby, with a door gap at y=14.
+  add(9, 12, 1, 2); // rows 12-13
+  add(9, 15, 1, 2); // rows 15-16
+  // Divider between lobby and gallery, with a door gap at y=14.
+  add(19, 12, 1, 2); // rows 12-13
+  add(19, 15, 1, 2); // rows 15-16
+  // Laser airlock walls: the airlock is the strip y 8-10, x 20-28, entered from
+  // the corridor along row 10 (gap at tile (19,10)) and from the vault door.
+  add(19, 8, 1, 2); // rows 8-9; row 10 stays open as the entrance
+  return walls;
 }
 
-export function circleHitsWall(x, y, radius) {
-  for (const w of WALLS) {
-    const cx = Math.max(w.x, Math.min(x, w.x + w.w));
-    const cy = Math.max(w.y, Math.min(y, w.y + w.h));
-    const dx = x - cx, dy = y - cy;
-    if (dx * dx + dy * dy < radius * radius) return w;
+// Shadow zones (dark floor where detection is halved), in tiles.
+function buildShadows() {
+  return [
+    { x: 2, y: 12, w: 3, h: 2 }, // office corner
+    { x: 11, y: 13, w: 3, h: 2 }, // lobby planters
+    { x: 21, y: 12, w: 3, h: 2 }, // gallery alcove
+    { x: 25, y: 15, w: 3, h: 2 }, // gallery far corner
+    { x: 3, y: 8, w: 3, h: 2 }, // counting-room dark corner
+    { x: 12, y: 10, w: 4, h: 1 }, // corridor rug
+    { x: 22, y: 5, w: 2, h: 1 }, // vault shadow by the safe
+  ];
+}
+
+// Doors the player can open. kind: 'keycard' needs the keycard or a lockpick.
+function buildDoors() {
+  return [
+    { id: 'vault-door', x: 24, y: 7, w: 1, h: 1, kind: 'keycard', open: false, label: 'VAULT DOOR' },
+    { id: 'front-doors', x: 15, y: 17, w: 1, h: 1, kind: 'open', open: true, label: 'FRONT DOORS' },
+  ];
+}
+
+export function buildLevel() {
+  const walls = buildWalls();
+  const shadows = buildShadows();
+  const doors = buildDoors();
+
+  // Guard patrol loops (tile waypoints, looped). Three guards, three routes.
+  const guards = [
+    {
+      name: 'Rook', color: '#ff6b5e',
+      route: [[11, 10], [18, 10], [18, 15], [11, 15]],
+      speed: 1.6, pause: 1.2, scan: 0.9,
+    },
+    {
+      name: 'Bishop', color: '#ff9a3d',
+      route: [[21, 13], [27, 13], [27, 16], [21, 16]],
+      speed: 1.5, pause: 1.0, scan: 1.1,
+    },
+    {
+      name: 'Knight', color: '#ff8fb0',
+      route: [[3, 13], [7, 13], [7, 15], [3, 15]],
+      speed: 1.7, pause: 0.8, scan: 0.8,
+    },
+  ];
+
+  // Cameras: fixed mounts that sweep a cone. angle in radians, sweep range.
+  const cameras = [
+    { id: 'cam-lobby', x: 15, y: 12, base: Math.PI / 2, sweep: 0.9, speed: 0.5, range: 7 },
+    { id: 'cam-gallery', x: 24, y: 12, base: Math.PI / 2, sweep: 1.1, speed: 0.65, range: 7 },
+    { id: 'cam-vault', x: 24, y: 6, base: Math.PI / 2, sweep: 0.8, speed: 0.55, range: 6 },
+  ];
+
+  // Laser beams in the airlock (y 8-10, x 20-28): horizontal beams that blink
+  // on a shared cycle with a phase offset, so the thief times the crossing.
+  const lasers = [
+    { y: 8.5, x0: 20, x1: 28, phase: 0.0, on: 1.6, off: 1.4 },
+    { y: 9.0, x0: 20, x1: 28, phase: 0.7, on: 1.6, off: 1.4 },
+    { y: 9.5, x0: 20, x1: 28, phase: 1.4, on: 1.6, off: 1.4 },
+    { y: 10.0, x0: 20, x1: 28, phase: 2.1, on: 1.6, off: 1.4 },
+  ];
+
+  // Loot: a fresh copy of the table with runtime state.
+  const loot = LOOT_TABLE.map((l) => ({ ...l, taken: false }));
+
+  // The keycard sits on the office desk.
+  const keycard = { x: 6, y: 14, taken: false, name: 'Security Keycard' };
+
+  // The getaway van waits on the street, south of the front doors.
+  const van = { x: 24, y: 18, w: 3, h: 1 };
+
+  // Roof vent: the ceiling vent that drops into the vault wing (entry point).
+  const vent = { x: 24, y: 2 };
+
+  return { walls, shadows, doors, guards, cameras, lasers, loot, keycard, van, vent };
+}
+
+// --- geometry helpers (pixel space) -----------------------------------------
+
+// openTiles: a Set of "tx,ty" keys for wall tiles that are currently open
+// (the vault door once unlocked). Those tiles never block sight or movement.
+function tileIsWall(level, tx, ty, openTiles) {
+  if (openTiles && openTiles.has(tx + ',' + ty)) return false;
+  for (const w of level.walls) {
+    if (tx >= w.x && tx < w.x + w.w && ty >= w.y && ty < w.y + w.h) return true;
   }
-  return null;
+  return false;
 }
 
-// Move a circle, sliding along walls. Returns the new position.
-export function moveCircle(x, y, dx, dy, radius) {
-  let nx = x + dx;
-  if (!circleHitsWall(nx, y, radius)) x = nx;
-  let ny = y + dy;
-  if (!circleHitsWall(x, ny, radius)) y = ny;
-  x = Math.max(20 + radius, Math.min(WORLD.w - 20 - radius, x));
-  y = Math.max(20 + radius, Math.min(WORLD.h - 20 - radius, y));
-  return { x, y };
+// True when the point (px, py) is inside any wall rectangle.
+export function pointInWall(level, px, py, openTiles) {
+  return tileIsWall(level, Math.floor(px / TILE), Math.floor(py / TILE), openTiles);
 }
 
-// Line of sight: true when no wall blocks the segment (sampled every 8px).
-export function hasLineOfSight(x1, y1, x2, y2) {
-  const dx = x2 - x1, dy = y2 - y1;
+// Circle (px, py, r) against walls: true when the circle overlaps a wall.
+export function circleHitsWall(level, px, py, r, openTiles) {
+  const x0 = Math.floor((px - r) / TILE);
+  const x1 = Math.floor((px + r) / TILE);
+  const y0 = Math.floor((py - r) / TILE);
+  const y1 = Math.floor((py + r) / TILE);
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      if (tileIsWall(level, tx, ty, openTiles)) {
+        const cx = Math.max(tx * TILE, Math.min(px, (tx + 1) * TILE));
+        const cy = Math.max(ty * TILE, Math.min(py, (ty + 1) * TILE));
+        const dx = px - cx;
+        const dy = py - cy;
+        if (dx * dx + dy * dy < r * r) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// True when the point is inside a shadow zone.
+export function pointInShadow(level, px, py) {
+  const tx = Math.floor(px / TILE);
+  const ty = Math.floor(py / TILE);
+  return level.shadows.some((s) => tx >= s.x && tx < s.x + s.w && ty >= s.y && ty < s.y + s.h);
+}
+
+// Line of sight between two pixel points: blocked by any wall rectangle.
+export function hasLineOfSight(level, x0, y0, x1, y1, openTiles) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
   const dist = Math.hypot(dx, dy);
   const steps = Math.max(1, Math.ceil(dist / 8));
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
-    if (circleHitsWall(x1 + dx * t, y1 + dy * t, 1)) return false;
+    if (pointInWall(level, x0 + dx * t, y0 + dy * t, openTiles)) return false;
   }
   return true;
 }
 
-export function inShadow(x, y) {
-  return SHADOWS.some((s) => pointInRect(x, y, s));
-}
-
-export function roomAt(x, y) {
-  for (const r of ROOMS) if (pointInRect(x, y, r)) return r;
-  return null;
-}
-
-export function angleDiff(a, b) {
-  let d = a - b;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return d;
-}
-
-// Seeded RNG (mulberry32) so staged shots and replays are deterministic.
-export function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+// Move a circle with simple axis-separated wall sliding; returns new position.
+export function moveCircle(level, x, y, r, dx, dy, openTiles) {
+  let nx = x + dx;
+  if (!circleHitsWall(level, nx, y, r, openTiles)) x = nx;
+  let ny = y + dy;
+  if (!circleHitsWall(level, x, ny, r, openTiles)) y = ny;
+  return { x, y };
 }

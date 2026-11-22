@@ -1,36 +1,35 @@
-// main.ts — the entrypoint the grader runs (node main.ts, Node 22, no network).
-// Copies game/ and screenshots/ from this repository into MAKEFUN_OUTPUT_DIR
-// (or ./out) and writes dossier.json there with buildDossier from the
-// vendored library. Deterministic: same files in, same bytes out.
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+// Midnight Vault — the hand-in program (Node 22, standard library only).
+// It copies game/ and screenshots/ from beside this file to /output and writes
+// /output/dossier.json with the vendored make.fun library, exactly as the
+// gate expects. Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
+//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+
+import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const repoRoot = dirname(fileURLToPath(import.meta.url));
-const outDir = process.env.MAKEFUN_OUTPUT_DIR || join(repoRoot, 'out');
+const here = fileURLToPath(new URL('.', import.meta.url));
+const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-const caps = {
-  text_max_bytes: 163840,
-  screenshots: { max: 4, max_bytes: 262144 },
-  game_max_files: 993,
-  game_max_bytes: 50331648,
-};
+mkdirSync(out, { recursive: true });
+cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
+mkdirSync(join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) {
+  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+}
 
-mkdirSync(outDir, { recursive: true });
-
-const gameSrc = join(repoRoot, 'game');
-const shotsSrc = join(repoRoot, 'screenshots');
-if (!existsSync(gameSrc)) throw new Error('main.ts: game/ is missing from the repository');
-if (!existsSync(shotsSrc)) throw new Error('main.ts: screenshots/ is missing from the repository');
-
-cpSync(gameSrc, join(outDir, 'game'), { recursive: true });
-cpSync(shotsSrc, join(outDir, 'screenshots'), { recursive: true });
-
-const dossier = buildDossier(outDir, caps);
-writeFileSync(join(outDir, 'dossier.json'), dossier);
-
-const shotNames = ['1-action.jpg', '2-plan.jpg', '3-vault.jpg', '4-escape.jpg'];
-const present = shotNames.filter((n) => existsSync(join(outDir, 'screenshots', n)));
-console.log(`Midnight Vault: wrote ${outDir}/dossier.json (${dossier.length} bytes), `
-  + `${present.length} screenshots, game copied.`);
+// The scorer's caps: only text_max_bytes shapes the bytes; the others refuse an
+// entry the scorer would refuse (more than 4 screenshots or one over 256 KiB;
+// more than 993 files in game/ or 48 MiB of game files in all, or a path
+// under game/ over 1000 bytes).
+writeFileSync(
+  join(out, 'dossier.json'),
+  buildDossier(out, {
+    text_max_bytes: 163840,
+    screenshots: { max: 4, max_bytes: 262144 },
+    game_max_files: 993,
+    game_max_bytes: 50331648,
+    game_path_max_bytes: 1000,
+  }),
+);
