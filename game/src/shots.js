@@ -1,103 +1,72 @@
-// Midnight Vault — screenshot staging: ?shot=plan|action|vault|escape sets up a
-// deterministic scene and freezes the simulation so the screenshot is a stable
-// render of the game's own code. The cover (action) shows the thief crossing
-// the gallery with guard cones, camera cones, lasers, the diamond and the HUD.
+// shots.js — deterministic staging for the four hand-in screenshots.
+// ?shot=plan|action|vault|escape freezes the game in a composed scene so
+// the renders are real frames of the game's own code, art-directed:
+//   plan   — the blueprint with a sensible loadout chosen
+//   action — the cover: thief mid-gallery, two guard cones, a camera cone,
+//            lasers live, the diamond glowing, the alarm at 35%
+//   vault  — the dial mini-game mid-crack with a tumbler already set
+//   escape — lockdown: 32 seconds left, guards hunting, van waiting
 
-import { TILE } from './config.js';
-
-// Freeze the game clock at a moment when two laser beams are live.
-const SHOT_TIME = 0.5;
-
-function placeThief(game, tx, ty) {
-  game.player.x = (tx + 0.5) * TILE;
-  game.player.y = (ty + 0.5) * TILE;
-  game.player.dir = 0;
-}
-
-function aimGuardAt(game, index, tx, ty) {
-  const g = game.guards[index];
-  if (!g) return;
-  g.dir = Math.atan2((ty + 0.5) * TILE - g.y, (tx + 0.5) * TILE - g.x);
-  g.suspicion = 0;
-  g.state = 'patrol';
-}
-
-export function applyShot(game, kind) {
-  game.time = SHOT_TIME;
-  if (kind === 'plan') {
-    game.phase = 'plan';
+export function stageShot(G, name) {
+  if (name === 'plan') {
+    G.prep.lockpick = 1; G.prep.emp = 1; G.prep.soles = 1; G.prep.duffel = 1;
+    G.entry = 'front';
     return;
   }
-  // Every other shot starts a heist, then stages the scene.
-  game.startHeist();
-  game.time = SHOT_TIME;
-  game.frozen = true;
+  G.prep.lockpick = 1; G.prep.emp = 1; G.prep.duffel = 1;
+  G.startHeist(name === 'vault' ? 'roof' : 'front');
+  const [g1, g2, g3] = G.guards;
+  const [c1, c2, c3] = G.cameras;
 
-  if (kind === 'action') {
-    // Cover: the thief crosses the gallery, a guard cone sweeps toward them,
-    // the gallery camera watches, lasers blink in the airlock, the diamond
-    // glows in the vault, and the alarm meter reads 35%.
-    game.plan.entry = 'front';
-    placeThief(game, 24, 14);
-    game.player.dir = Math.PI;
-    game.alarm = 35;
-    // Bishop (gallery guard) patrols near the thief, cone aimed at them.
-    const bishop = game.guards[1];
-    bishop.x = (21.5) * TILE;
-    bishop.y = (14.5) * TILE;
-    bishop.dir = 0;
-    bishop.suspicion = 62;
-    bishop.state = 'suspicious';
-    // Rook's cone sweeps the lobby; Knight watches the offices.
-    aimGuardAt(game, 0, 15, 15);
-    aimGuardAt(game, 2, 5, 14);
-    // Gallery camera aimed across the room.
-    game.security.cameras[1].angle = Math.PI * 0.85;
-    game.security.cameras[0].angle = Math.PI * 0.6;
-    return;
-  }
-
-  if (kind === 'vault') {
-    // The thief stands at the safe, the crack dial open on tumbler 2.
-    placeThief(game, 24, 4.5);
-    game.player.dir = -Math.PI / 2;
-    game.alarm = 58;
-    game.vault.active = true;
-    game.vault.tumbler = 1;
-    game.vault.angle = 1.2;
-    game.vault.zoneCenter = 1.1;
-    game.vault.speed = 2.6;
-    // Vault camera sweeps the vault door.
-    game.security.cameras[2].angle = Math.PI / 2;
-    return;
-  }
-
-  if (kind === 'escape') {
-    // Lockdown escape: the diamond is taken, alarm at 100, the thief sprints
-    // for the van while the guards chase.
-    const diamond = game.level.loot.find((l) => l.id === 'diamond');
-    diamond.taken = true;
-    game.player.loot.push('diamond');
-    game.player.weight += diamond.weight;
-    game.hasDiamond = true;
-    game.alarm = 100;
-    game.lockdown = true;
-    game.lockdownLeft = 31;
-    placeThief(game, 20, 17.5);
-    game.player.dir = 0;
-    game.player.sprinting = true;
-    for (const g of game.guards) {
-      g.state = 'chase';
-      g.suspicion = 100;
-      g.lastSeen = { x: game.player.x, y: game.player.y, at: game.time };
+  if (name === 'action') {
+    G.time = 5.4; // a moment when all four laser beams are live
+    G.playTime = 74;
+    G.alarm = 35; G.alarmPeak = 35;
+    Object.assign(G.player, { x: 512, y: 205, angle: 0.15, weight: 5, value: 2400 });
+    Object.assign(g1, { x: 688, y: 128, angle: 2.73, suspicion: 0.55, sees: true, state: 'suspicious' });
+    Object.assign(g2, { x: 430, y: 520, angle: 0.9, suspicion: 0.15 });
+    Object.assign(g3, { x: 985, y: 368, angle: Math.PI, suspicion: 0.2 });
+    c1.angle = 2.5; c1.fill = 0.5;
+    c2.angle = 1.15;
+    c3.angle = 3.4;
+    for (const laser of G.lasers) laser.on = true;
+    for (let i = 0; i < 14; i++) {
+      G.particles.push({
+        x: 560 + (G.rng() - 0.5) * 60, y: 110 + (G.rng() - 0.5) * 44,
+        vx: 0, vy: 0, life: 9, maxLife: 9, color: '#aef3ff', size: 2.6,
+      });
     }
-    game.guards[0].x = 15 * TILE;
-    game.guards[0].y = 15 * TILE;
-    game.guards[1].x = 22 * TILE;
-    game.guards[1].y = 15 * TILE;
-    return;
   }
 
-  // Unknown shot kind: just play the opening frame.
-  placeThief(game, 15, 16);
+  if (name === 'vault') {
+    G.playTime = 121;
+    G.alarm = 55; G.alarmPeak = 55;
+    G.hasKeycard = true;
+    G.doorOpen = true;
+    Object.assign(G.player, { x: 1036, y: 122, angle: -Math.PI / 2, weight: 2, value: 800 });
+    Object.assign(g3, { x: 1152, y: 268, angle: -Math.PI / 2, suspicion: 0.3 });
+    Object.assign(g1, { x: 430, y: 250, angle: 0.4 });
+    c3.angle = 3.6;
+    G.dial.open = true;
+    G.dial.tumblers = 1;
+    G.dial.zoneStart = 0.8;
+    G.dial.zoneSize = 0.62;
+    G.dial.angle = 1.02; // needle resting inside the gold zone
+    G.toastMsg = '';
+  }
+
+  if (name === 'escape') {
+    G.playTime = 168;
+    G.alarm = 100; G.alarmPeak = 100;
+    G.lockdown = 32; G.lockdownWas = true;
+    G.hasDiamond = true; G.hasKeycard = true; G.doorOpen = true; G.cracked = true;
+    const diamond = G.loot.find((l) => l.id === 'diamond');
+    if (diamond) diamond.taken = true;
+    Object.assign(G.player, { x: 648, y: 394, angle: 2.65, weight: 9, value: 8900, running: true });
+    Object.assign(g3, { x: 772, y: 368, angle: 2.9, suspicion: 1, state: 'chase', sees: true });
+    Object.assign(g2, { x: 566, y: 486, angle: -1.1, suspicion: 1, state: 'chase' });
+    Object.assign(g1, { x: 520, y: 292, angle: 1.2, suspicion: 0.8, state: 'investigate' });
+    c2.angle = 1.5; c2.fill = 0.8;
+    G.toastMsg = '';
+  }
 }

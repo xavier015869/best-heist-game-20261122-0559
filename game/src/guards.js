@@ -1,160 +1,127 @@
-// Midnight Vault — the Lantern Guards: patrol loops with pauses and scans,
-// vision cones clipped by walls, and a suspicion meter with real recovery.
-// States: patrol -> suspicious (investigate) -> chase -> give up and return.
+// guards.js — the three guards: waypoint patrols, vision cones, suspicion,
+// investigation and chase. A guard who fills his suspicion bar investigates;
+// a guard who sees you clearly at close range (or any guard during lockdown)
+// hunts you down, and a touch while hunting is the end of the heist.
 
-import { TILE } from './config.js';
-import { hasLineOfSight, moveCircle } from './level.js';
+import { DETECTION, GUARD, LOCKDOWN } from './config.js';
+import { PATROLS, angleDiff, dist, inShadow, moveCircle } from './level.js';
+import { inCone } from './security.js';
 
-export const CONE_RANGE = 7 * TILE; // 224 px
-export const CONE_HALF_ANGLE = 0.61; // ~35 degrees each side
-
-export function createGuards(level) {
-  return level.guards.map((g) => ({
-    name: g.name,
-    color: g.color,
-    route: g.route.map(([tx, ty]) => ({ x: (tx + 0.5) * TILE, y: (ty + 0.5) * TILE })),
-    speed: g.speed * TILE,
-    pause: g.pause,
-    scan: g.scan,
-    wp: 0,
-    x: (g.route[0][0] + 0.5) * TILE,
-    y: (g.route[0][1] + 0.5) * TILE,
-    dir: 0,
-    state: 'patrol', // patrol | suspicious | investigate | chase
-    suspicion: 0, // 0..100, fills when the thief is seen, cools otherwise
-    wait: 0,
-    lastSeen: null,
-    closeCallAt: -10,
+export function makeGuards() {
+  return PATROLS.map((route, i) => ({
+    id: i,
+    x: route[0].x, y: route[0].y,
+    route, wp: 1,
+    angle: Math.atan2(route[1].y - route[0].y, route[1].x - route[0].x),
+    state: 'patrol',           // patrol | suspicious | investigate | chase | return
+    suspicion: 0,
+    sees: false,
+    target: null,              // last known player position
+    waitFor: 0,
+    stepPhase: Math.random() * 6,
   }));
 }
 
-// Can this guard see the thief right now? Cone angle + range + line of sight,
-// halved while the thief is sneaking in shadow or inside smoke.
-export function guardSeesPlayer(game, guard) {
-  const p = game.player;
-  if (game.time < p.smokeUntil) return false;
-  const dx = p.x - guard.x;
-  const dy = p.y - guard.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist > CONE_RANGE) return false;
-  let ang = Math.atan2(dy, dx) - guard.dir;
-  while (ang > Math.PI) ang -= Math.PI * 2;
-  while (ang < -Math.PI) ang += Math.PI * 2;
-  if (Math.abs(ang) > CONE_HALF_ANGLE) return false;
-  if (!hasLineOfSight(game.level, guard.x, guard.y, p.x, p.y, game.openTiles)) return false;
-  return true;
+function moveToward(G, g, tx, ty, speed, dt) {
+  const d = dist(g.x, g.y, tx, ty);
+  if (d < 3) return true;
+  const want = Math.atan2(ty - g.y, tx - g.x);
+  g.angle += clampTurn(want - g.angle, dt * 7);
+  const step = Math.min(d, speed * dt);
+  moveCircle(g, Math.cos(g.angle) * step, Math.sin(g.angle) * step, GUARD.radius, G.doorSegs());
+  g.stepPhase += dt * speed * 0.09;
+  return d < 10;
 }
 
-// Detection rate for a guard that currently sees the thief: closer, louder and
-// brighter is faster; sneaking in shadow is much slower.
-export function detectionRate(game, guard) {
-  const p = game.player;
-  const dist = Math.hypot(p.x - guard.x, p.y - guard.y);
-  let rate = 55 * (1 - dist / (CONE_RANGE * 1.15));
-  if (p.sneaking) rate *= 0.45;
-  if (game.level && p && rate > 0) {
-    // Shadow cover halves detection.
-    const inShadow = (() => {
-      const tx = Math.floor(p.x / TILE);
-      const ty = Math.floor(p.y / TILE);
-      return game.level.shadows.some((s) => tx >= s.x && tx < s.x + s.w && ty >= s.y && ty < s.y + s.h);
-    })();
-    if (inShadow) rate *= 0.5;
-  }
-  if (p.sprinting) rate *= 1.5;
-  return Math.max(6, rate);
+function clampTurn(diff, max) {
+  const d = angleDiff(diff, 0);
+  return Math.max(-max, Math.min(max, d));
 }
 
-export function updateGuards(game, dt) {
-  const now = game.time;
-  for (const g of game.guards) {
-    const sees = guardSeesPlayer(game, g);
-    const p = game.player;
-
-    if (sees) {
-      const rate = detectionRate(game, g);
-      g.suspicion = Math.min(100, g.suspicion + rate * dt);
-      g.lastSeen = { x: p.x, y: p.y, at: now };
-      // A near-miss: the guard almost spots the thief, then loses them.
-      if (g.suspicion > 55 && g.suspicion < 100 && g.state === 'patrol') {
-        g.state = 'suspicious';
-      }
-      if (g.suspicion >= 100 && g.state !== 'chase') {
+export function updateGuards(G, dt) {
+  let anySees = false;
+  const p = G.player;
+  for (const g of G.guards) {
+    // ---- senses ------------------------------------------------------------
+    const blinded = G.smokeAt(g) || G.smokeAt(p);
+    const strength = (G.disabledFor > 0 || blinded) ? 0 :
+      inCone(g.x, g.y, g.angle, p.x, p.y, GUARD.coneLength, GUARD.coneHalfAngle, G.doorSegs());
+    g.sees = strength > 0;
+    if (g.sees) {
+      anySees = true;
+      const rate = DETECTION.guardRate * (0.35 + strength) * (inShadow(p.x, p.y) ? DETECTION.shadowFactor : 1);
+      g.suspicion = Math.min(1, g.suspicion + rate * dt);
+      g.target = { x: p.x, y: p.y };
+      if (g.suspicion > 0.35) G.raiseAlarm(DETECTION.alarmFromGuard * strength * dt, 'guard');
+      if (g.suspicion >= 1 && g.state !== 'chase') {
         g.state = 'chase';
-        game.onSpotted(g);
+        G.onSpotted(g);
       }
     } else {
-      // Cool down when the thief breaks sight — recovery is real.
-      g.suspicion = Math.max(0, g.suspicion - 14 * dt);
-      if (g.suspicion < 30 && g.state === 'suspicious') g.state = 'patrol';
-      if (g.state === 'chase' && now - (g.lastSeen ? g.lastSeen.at : 0) > 4) {
-        g.state = 'investigate';
-      }
+      g.suspicion = Math.max(0, g.suspicion - DETECTION.decay * dt);
     }
+    // hearing: sprinting nearby, or any footsteps very close
+    const pd = dist(g.x, g.y, p.x, p.y);
+    if (p.noiseRadius > 0 && pd < p.noiseRadius && g.state !== 'chase') {
+      g.suspicion = Math.min(1, g.suspicion + dt * 0.5);
+      if (g.suspicion > 0.4) { g.target = { x: p.x, y: p.y }; if (g.state === 'patrol') g.state = 'suspicious'; }
+    }
+    if (pd < GUARD.hearRadius && g.state === 'patrol') { g.state = 'suspicious'; g.target = { x: p.x, y: p.y }; }
 
-    // Movement by state.
-    if (g.state === 'patrol') {
-      patrolStep(game, g, dt);
-    } else if (g.state === 'suspicious') {
-      // Stand and scan: turn slowly, looking for the thief.
-      g.dir += Math.sin(now * 1.4 + g.x) * 0.9 * dt;
-    } else if (g.state === 'investigate') {
-      if (g.lastSeen) {
-        const arrived = moveToward(game, g, g.lastSeen.x, g.lastSeen.y, g.speed * 1.15, dt);
-        if (arrived) {
-          g.wait += dt;
-          g.dir += 1.8 * dt;
-          if (g.wait > 2.5) {
-            g.state = 'patrol';
-            g.wait = 0;
-          }
+    // ---- behaviour -----------------------------------------------------------
+    const huntSpeed = GUARD.chaseSpeed + (G.lockdown ? LOCKDOWN.guardSpeedBonus : 0);
+    switch (g.state) {
+      case 'patrol': {
+        const wp = g.route[g.wp];
+        if (moveToward(G, g, wp.x, wp.y, GUARD.patrolSpeed, dt)) {
+          g.wp = (g.wp + 1) % g.route.length;
         }
-      } else {
-        g.state = 'patrol';
+        if (g.suspicion > 0.45 && g.target) g.state = 'suspicious';
+        break;
       }
-    } else if (g.state === 'chase') {
-      if (g.lastSeen) {
-        moveToward(game, g, p.x, p.y, g.speed * 1.75, dt);
-        // Caught: a chasing guard that touches the thief ends the run.
-        if (Math.hypot(p.x - g.x, p.y - g.y) < 26) {
-          game.onCaught(g);
+      case 'suspicious': {
+        // stop and stare toward the stimulus
+        if (g.target) {
+          const want = Math.atan2(g.target.y - g.y, g.target.x - g.x);
+          g.angle += clampTurn(want - g.angle, dt * 5);
         }
+        g.waitFor += dt;
+        if (g.waitFor > 0.85) { g.waitFor = 0; g.state = g.target ? 'investigate' : 'patrol'; }
+        if (g.suspicion <= 0.05) g.state = 'patrol';
+        break;
+      }
+      case 'investigate': {
+        if (!g.target) { g.state = 'return'; break; }
+        if (moveToward(G, g, g.target.x, g.target.y, GUARD.investigateSpeed, dt)) {
+          g.waitFor += dt;
+          g.angle += dt * 1.4; // look around
+          if (g.waitFor > 1.5) { g.waitFor = 0; g.suspicion = Math.min(g.suspicion, 0.3); g.state = 'return'; }
+        }
+        break;
+      }
+      case 'chase': {
+        if (g.sees) g.target = { x: p.x, y: p.y };
+        if (g.target) moveToward(G, g, g.target.x, g.target.y, huntSpeed, dt);
+        if (!g.sees && g.suspicion <= 0.25 && !G.lockdown) { g.state = 'return'; g.target = null; }
+        if (G.lockdown) g.suspicion = 1;
+        break;
+      }
+      case 'return': {
+        // head back to the nearest waypoint, then resume the loop
+        let best = 0, bd = Infinity;
+        g.route.forEach((w, i) => { const d = dist(g.x, g.y, w.x, w.y); if (d < bd) { bd = d; best = i; } });
+        if (moveToward(G, g, g.route[best].x, g.route[best].y, GUARD.returnSpeed, dt)) {
+          g.wp = (best + 1) % g.route.length;
+          g.state = 'patrol';
+        }
+        if (g.suspicion > 0.6 && g.target) g.state = 'investigate';
+        break;
       }
     }
 
-    // Close call: the guard's suspicion peaked above 70 and then the thief
-    // broke sight without being caught — worth +50 and a whoosh.
-    if (g.suspicion > 70 && !sees && now - g.closeCallAt > 8 && g.state !== 'chase') {
-      g.closeCallAt = now;
-      game.onCloseCall(g);
-    }
+    // ---- the catch -----------------------------------------------------------
+    if (pd < GUARD.catchRadius && (g.state === 'chase' || G.lockdown)) G.onCaught(g);
+    else if (pd < 15 && g.suspicion > 0.85) G.onCaught(g);
   }
-}
-
-function patrolStep(game, g, dt) {
-  if (g.wait > 0) {
-    g.wait -= dt;
-    // Scan while paused at a waypoint.
-    g.dir += Math.sin(game.time * 1.1 + g.wp) * 0.7 * dt;
-    if (g.wait <= 0) g.wp = (g.wp + 1) % g.route.length;
-    return;
-  }
-  const target = g.route[g.wp];
-  const arrived = moveToward(game, g, target.x, target.y, g.speed, dt);
-  if (arrived) g.wait = g.pause;
-}
-
-function moveToward(game, g, tx, ty, speed, dt) {
-  const dx = tx - g.x;
-  const dy = ty - g.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist < 6) return true;
-  const step = Math.min(dist, speed * dt);
-  const nx = g.x + (dx / dist) * step;
-  const ny = g.y + (dy / dist) * step;
-  const pos = moveCircle(game.level, g.x, g.y, 11, nx - g.x, ny - g.y, game.openTiles);
-  g.x = pos.x;
-  g.y = pos.y;
-  g.dir = Math.atan2(dy, dx);
-  return false;
+  return anySees;
 }

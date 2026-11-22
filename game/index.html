@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Midnight Vault — a stealth heist</title>
+<title>Midnight Vault — a stealth heist game</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-<main>
-  <canvas id="game" width="960" height="640"></canvas>
-  <p class="hint">WASD / arrows — move &nbsp;·&nbsp; Shift — sneak &nbsp;·&nbsp; F — sprint &nbsp;·&nbsp; E — interact / hold to pick &nbsp;·&nbsp; 1 — EMP &nbsp;·&nbsp; 2 — smoke &nbsp;·&nbsp; Space — crack the vault &nbsp;·&nbsp; M — mute &nbsp;·&nbsp; R — restart</p>
+<main class="stage">
+  <canvas id="game" width="1280" height="800"></canvas>
+  <p class="hint">Plan the job, then run it: WASD / arrows move · SHIFT run · E interact · Q EMP · F smoke. Steal the Star Diamond and reach the van.</p>
 </main>
-<script type="module" src="src/main.js"></script>
+<script type="module" src="src/game.js"></script>
 </body>
 </html>

@@ -1,78 +1,78 @@
-// Midnight Vault — the vault crack: a 3-tumbler timing dial played standing
-// exposed by the lasers. Press Space when the needle is inside the green zone;
-// each hit sets a tumbler, each miss costs suspicion. Three hits open the vault.
+// vault.js — the 3-tumbler timing dial. The thief stands exposed in front
+// of the vault safe while a needle sweeps the dial; stop it inside the gold
+// zone three times to crack the safe. A miss costs alarm and rattles the
+// needle faster. Drawn by render.js from this state.
 
-export function createVault() {
+import { sfx } from './audio.js';
+
+export function makeDial() {
   return {
-    active: false, // the dial overlay is open
-    tumbler: 0, // 0..2, how many tumblers are set
-    angle: 0, // needle angle, radians
-    speed: 2.6, // radians per second; speeds up each tumbler
-    zoneCenter: 0, // centre of the green zone, radians
-    zoneHalf: 0.42, // green zone half-width
-    misses: 0,
-    opened: false,
+    open: false,
+    angle: -Math.PI / 2,
+    speed: 2.4,              // radians per second, grows per tumbler
+    tumblers: 0,             // 0..3 locked
+    zoneStart: 0.6,          // current gold zone (radians, dial space)
+    zoneSize: 0.62,
+    lastTick: 0,
+    wobble: 0,
   };
 }
 
-export function openVaultCrack(game) {
-  const v = game.vault;
-  v.active = true;
-  v.tumbler = 0;
-  v.angle = 0;
-  v.speed = 2.6;
-  v.zoneCenter = Math.random() * Math.PI * 2;
-  v.misses = 0;
-  game.audio.vaultTick();
-  game.flash('Crack the vault — Space when the needle is in the green!');
+function randomZone(G) {
+  // keep the gold zone away from the very top so a fresh dial is readable
+  return 0.7 + G.rng() * (Math.PI * 2 - 1.4);
 }
 
-export function closeVaultCrack(game) {
-  game.vault.active = false;
+export function openDial(G) {
+  G.dial.open = true;
+  G.dial.tumblers = 0;
+  G.dial.speed = 2.4;
+  G.dial.angle = -Math.PI / 2;
+  G.dial.zoneStart = randomZone(G);
+  G.dial.zoneSize = 0.62;
+  G.toast('Cracking the vault — stop the needle in the gold, three times');
 }
 
-export function updateVault(game, dt) {
-  const v = game.vault;
-  if (!v.active || v.opened) return;
-  v.angle += v.speed * dt;
-  if (v.angle > Math.PI * 2) v.angle -= Math.PI * 2;
-  // Space (or click) attempts a tumbler.
-  if (game.input.wasPressed('Space') || game.input.mouse.pressed) {
-    let diff = v.angle - v.zoneCenter;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    if (Math.abs(diff) <= v.zoneHalf) {
-      v.tumbler += 1;
-      v.speed += 0.7;
-      v.zoneCenter = Math.random() * Math.PI * 2;
-      game.audio.pickup();
-      game.flash('Tumbler ' + v.tumbler + ' of 3 set!');
-      if (v.tumbler >= 3) {
-        v.opened = true;
-        v.active = false;
-        game.vaultOpen = true;
-        game.audio.vaultOpen();
-        game.flash('VAULT OPEN — the Midnight Diamond is yours for the taking');
-      }
-    } else {
-      v.misses += 1;
-      v.speed = Math.min(4.2, v.speed + 0.25);
-      game.alarm = Math.min(100, game.alarm + 12);
-      game.audio.laserZap();
-      game.flash('Missed the tumbler! +12 alarm');
+export function closeDial(G) {
+  G.dial.open = false;
+}
+
+export function updateDial(G, dt) {
+  const d = G.dial;
+  if (!d.open) return;
+  d.angle += d.speed * dt;
+  if (d.angle > Math.PI * 1.5) d.angle -= Math.PI * 2;
+  const tick = Math.floor((d.angle + Math.PI / 2) / (Math.PI / 8));
+  if (tick !== d.lastTick) { d.lastTick = tick; sfx.dialTick(); }
+  d.wobble = Math.max(0, d.wobble - dt * 3);
+}
+
+export function pressDial(G) {
+  const d = G.dial;
+  if (!d.open) return;
+  // normalise the needle into zone space
+  let rel = (d.angle - d.zoneStart) % (Math.PI * 2);
+  if (rel < 0) rel += Math.PI * 2;
+  if (rel <= d.zoneSize) {
+    d.tumblers += 1;
+    sfx.tumbler();
+    G.burst(G.player.x, G.player.y - 18, '#ffd75e', 10);
+    if (d.tumblers >= 3) {
+      G.cracked = true;
+      closeDial(G);
+      sfx.door();
+      G.toast('VAULT CRACKED — take everything that is not nailed down');
+      return;
     }
+    d.speed += 0.85;
+    d.zoneSize = Math.max(0.4, d.zoneSize - 0.08);
+    d.zoneStart = randomZone(G);
+  } else {
+    sfx.miss();
+    d.wobble = 1;
+    d.speed += 0.3;
+    G.raiseAlarm(6, 'dial');
+    G.alertNearestGuard(G.player.x, G.player.y, 0.35);
+    G.toast('The tumbler slips — the noise carries (+6 alarm)');
   }
-  // Escape closes the dial (the vault stays as cracked so far).
-  if (game.input.wasPressed('Escape')) {
-    closeVaultCrack(game);
-  }
-}
-
-// Is the thief standing at the vault, close enough to start cracking?
-export function nearVault(game) {
-  const p = game.player;
-  // The vault safe sits at tile (24, 3); the thief cracks from its south side.
-  const vx = (24 + 0.5) * 32;
-  const vy = (3 + 0.5) * 32;
-  return Math.hypot(p.x - vx, p.y - vy) < 32 * 1.6;
 }

@@ -1,189 +1,90 @@
-// Midnight Vault — the thief: movement, load, tools and loot pickup.
+// player.js — the thief: movement with a loot bag that grows heavier,
+// pickups, the keycard, tools (EMP / smoke) and door interaction.
 
-import { TILE } from './config.js';
-import { moveCircle, pointInShadow } from './level.js';
+import { CARRY, PLAYER } from './config.js';
+import { KEYCARD, LOOT, SAFE, VAULT_DOOR, dist, inShadow, moveCircle } from './level.js';
+import { moveVector, pressed } from './input.js';
+import { sfx } from './audio.js';
+import { fireEMP } from './security.js';
 
-const BASE_SPEED = 150; // px per second, walking
-const SNEAK_SPEED = 78;
-const SPRINT_SPEED = 205;
-
-export function createPlayer(x, y, tools) {
+export function makePlayer(spawn) {
   return {
-    x, y, r: 11,
-    dir: 0, // facing angle, radians
-    moving: false,
-    sneaking: false,
-    sprinting: false,
-    // Tool counts bought in planning.
-    tools: { ...tools },
-    empUntil: 0,
-    smokeUntil: 0,
-    // Lockpick progress on the vault door (0..1), null when not picking.
-    picking: null,
-    // Loot carried: array of loot ids.
-    loot: [],
-    weight: 0,
-    steps: 0,
-    lastStepAt: 0,
+    x: spawn.x, y: spawn.y,
+    angle: -Math.PI / 2,
+    moving: false, running: false,
+    noiseRadius: 0,
+    weight: 0, value: 0,
+    stepTimer: 0,
   };
 }
 
-// Current carry capacity: 6 weight, +4 with the duffel bag.
-export function carryCapacity(player) {
-  return player.tools.duffel ? 10 : 6;
+export function carryCap(G) { return G.prep.duffel > 0 ? CARRY.duffel : CARRY.base; }
+
+export function speedFactor(G) {
+  return Math.max(CARRY.minSpeedFactor, 1 - G.player.weight * CARRY.slowPerWeight);
 }
 
-export function playerSpeed(player) {
-  let speed = player.sneaking ? SNEAK_SPEED : player.sprinting ? SPRINT_SPEED : BASE_SPEED;
-  const cap = carryCapacity(player);
-  if (player.weight > cap) speed *= 0.62; // overloaded: slow thief
-  else if (player.weight > cap * 0.6) speed *= 0.85;
-  return speed;
-}
+export function updatePlayer(G, dt) {
+  const p = G.player;
+  const v = moveVector();
+  p.moving = v.moving && !G.dial.open;
+  p.running = p.moving && (G.keys.has('ShiftLeft') || G.keys.has('ShiftRight'));
+  const speed = (p.running ? PLAYER.runSpeed : PLAYER.walkSpeed) * speedFactor(G);
+  p.noiseRadius = p.running ? (G.prep.soles > 0 ? PLAYER.quietNoiseRadius : PLAYER.runNoiseRadius) : 0;
 
-// Loudness of the thief right now, 0..1: sprinting is loud, sneaking is quiet,
-// soft soles halve it, smoke silences it.
-export function playerNoise(player, now) {
-  if (now < player.smokeUntil) return 0;
-  let n = player.sprinting ? 1 : player.sneaking ? 0.15 : 0.45;
-  if (player.tools.soles) n *= 0.5;
-  if (!player.moving) n = 0;
-  return n;
-}
-
-// One simulation step: move, spend tools, handle lockpicking.
-export function updatePlayer(game, dt) {
-  const p = game.player;
-  const input = game.input;
-  const now = game.time;
-  const level = game.level;
-
-  p.sneaking = input.down('ShiftLeft', 'ShiftRight');
-  p.sprinting = input.down('KeyF') && !p.sneaking;
-  const v = input.moveVector();
-  p.moving = v.x !== 0 || v.y !== 0;
-
+  const prevX = p.x, prevY = p.y;
   if (p.moving) {
-    const speed = playerSpeed(p);
-    const pos = moveCircle(level, p.x, p.y, p.r, v.x * speed * dt, v.y * speed * dt, game.openTiles);
-    p.x = pos.x;
-    p.y = pos.y;
-    p.dir = Math.atan2(v.y, v.x);
-    // Footstep sounds, spaced by gait.
-    const interval = p.sneaking ? 0.55 : p.sprinting ? 0.28 : 0.4;
-    if (now - p.lastStepAt > interval) {
-      p.lastStepAt = now;
-      p.steps += 1;
-      game.audio.step();
+    p.angle = Math.atan2(v.y, v.x);
+    moveCircle(p, v.x * speed * dt, v.y * speed * dt, PLAYER.radius, G.doorSegs());
+    p.stepTimer -= dt;
+    if (p.stepTimer <= 0) {
+      p.stepTimer = p.running ? 0.24 : 0.34;
+      if (p.running) {
+        sfx.step();
+        // sprinting kicks up a little dust — speed you can see
+        G.particles.push({
+          x: p.x - v.x * 10, y: p.y - v.y * 10 + 6,
+          vx: -v.x * 16, vy: -6, life: 0.4, maxLife: 0.4,
+          color: 'rgba(190,198,214,0.8)', size: 3,
+        });
+      }
+    }
+  }
+  G.checkLasers(prevX, prevY);
+
+  // ---- pickups ---------------------------------------------------------------
+  if (!G.hasKeycard && dist(p.x, p.y, KEYCARD.x, KEYCARD.y) < PLAYER.pickupRadius + 6) {
+    G.hasKeycard = true;
+    sfx.keycard();
+    G.toast('Keycard taken — the vault door will open for you');
+  }
+  for (const item of G.loot) {
+    if (item.taken) continue;
+    if (item.crack && !G.cracked) continue;
+    if (dist(p.x, p.y, item.x, item.y) < PLAYER.pickupRadius) {
+      if (p.weight + item.weight > carryCap(G)) {
+        G.toastOnce('bagfull', 'Your bag is full — you cannot carry the ' + item.name);
+        continue;
+      }
+      item.taken = true;
+      p.weight += item.weight;
+      p.value += item.value;
+      if (item.gem) { G.hasDiamond = true; sfx.sparkle(); G.raiseAlarm(8, 'diamond'); G.toast('THE STAR DIAMOND IS YOURS — get to the van!'); }
+      else { sfx.pickup(); G.toast(item.name + '  +$' + item.value.toLocaleString('en-US')); }
+      G.burst(item.x, item.y, item.gem ? '#aef3ff' : '#ffd75e', item.gem ? 22 : 8);
     }
   }
 
-  // Tool hotkeys: 1 = EMP, 2 = smoke.
-  if (input.wasPressed('Digit1') && p.tools.emp > 0 && now >= p.empUntil) {
-    p.tools.emp -= 1;
-    p.empUntil = now + 12;
-    game.audio.whoosh();
-    game.flash('EMP burst — cameras dark for 12s');
-  }
-  if (input.wasPressed('Digit2') && p.tools.smoke > 0 && now >= p.smokeUntil) {
-    p.tools.smoke -= 1;
-    p.smokeUntil = now + 6;
-    game.audio.smoke();
-    game.flash('Smoke — unseen for 6s');
-  }
-
-  // Interact (E): pick up loot / keycard, or start lockpicking the vault door.
-  if (input.wasPressed('KeyE')) {
-    tryInteract(game);
-  }
-
-  // Lockpicking continues while the player holds E near the vault door.
-  const door = level.doors.find((d) => d.id === 'vault-door');
-  const nearDoor = Math.abs(p.x - (door.x + 0.5) * TILE) < TILE * 1.4
-    && Math.abs(p.y - (door.y + 0.5) * TILE) < TILE * 1.4;
-  if (p.tools.lockpick && !door.open && nearDoor && input.down('KeyE')) {
-    if (p.picking === null) {
-      p.picking = 0;
-      game.flash('Picking the vault door… hold E, stay quiet');
-    }
-    p.picking += dt / 6; // 6 seconds of noisy picking
-    game.alarm = Math.min(100, game.alarm + dt * 2.2); // picking is noisy
-    if (Math.random() < dt * 6) game.audio.vaultTick();
-    if (p.picking >= 1) {
-      door.open = true;
-      p.picking = null;
-      game.audio.vaultOpen();
-      game.flash('Vault door picked open');
-    }
-  } else if (p.picking !== null) {
-    p.picking = null; // stepped away: progress lost
-  }
+  // ---- interactions ------------------------------------------------------------
+  if (pressed('KeyE')) G.interact();
+  if (pressed('KeyQ')) G.useEMP();
+  if (pressed('KeyF')) G.useSmoke();
 }
 
-function tryInteract(game) {
-  const p = game.player;
-  const level = game.level;
-
-  // Keycard pickup.
-  const k = level.keycard;
-  if (!k.taken && Math.hypot(p.x - (k.x + 0.5) * TILE, p.y - (k.y + 0.5) * TILE) < TILE) {
-    k.taken = true;
-    p.hasKeycard = true;
-    game.audio.pickup();
-    game.flash('Security keycard taken');
-    return;
-  }
-
-  // Vault door: from the vault side (north) it opens freely — no bank locks
-  // its own thief inside. From the airlock side it needs the keycard.
-  const door = level.doors.find((d) => d.id === 'vault-door');
-  if (!door.open
-    && Math.abs(p.x - (door.x + 0.5) * TILE) < TILE * 1.4
-    && Math.abs(p.y - (door.y + 0.5) * TILE) < TILE * 1.4) {
-    const fromInside = p.y < (door.y + 0.5) * TILE;
-    if (fromInside || p.hasKeycard) {
-      door.open = true;
-      game.audio.vaultOpen();
-      game.flash(fromInside ? 'Vault door opens from the inside' : 'Vault door unlocked with the keycard');
-      return;
-    }
-    game.flash('Vault door is locked — you need the keycard or a lockpick');
-    return;
-  }
-
-  // Loot pickup: nearest loot within reach that still fits the bag.
-  let best = null;
-  let bestD = Infinity;
-  for (const l of level.loot) {
-    if (l.taken) continue;
-    const d = Math.hypot(p.x - (l.x + 0.5) * TILE, p.y - (l.y + 0.5) * TILE);
-    if (d < TILE * 1.1 && d < bestD) {
-      best = l;
-      bestD = d;
-    }
-  }
-  if (best) {
-    if (p.weight + best.weight > carryCapacity(p)) {
-      game.flash('Too heavy — drop something or come back with the duffel');
-      return;
-    }
-    if (best.vault && !game.vaultOpen) {
-      game.flash('The vault is still locked — crack it first');
-      return;
-    }
-    best.taken = true;
-    p.loot.push(best.id);
-    p.weight += best.weight;
-    game.audio.coin();
-    game.flash(best.name + ' taken (+$' + best.value.toLocaleString() + ')');
-    if (best.id === 'diamond') {
-      game.hasDiamond = true;
-      game.flash('THE MIDNIGHT DIAMOND IS YOURS — get to the van!');
-    }
-  }
+export function doorDistance(G) {
+  return dist(G.player.x, G.player.y, VAULT_DOOR.cx, VAULT_DOOR.cy + 14);
 }
 
-// Is the thief standing in shadow cover right now?
-export function playerInShadow(game) {
-  return pointInShadow(game.level, game.player.x, game.player.y);
+export function safeDistance(G) {
+  return dist(G.player.x, G.player.y, SAFE.x, SAFE.y + 26);
 }

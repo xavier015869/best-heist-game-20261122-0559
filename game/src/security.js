@@ -1,118 +1,77 @@
-// Midnight Vault — cameras, lasers and the ALARM meter. Cameras sweep cyan cones;
-// lasers blink on a timed cycle in the airlock; at 100% alarm the bank locks down
-// for a 45-second escape countdown while every guard hunts the thief.
+// security.js — the bank's electronic eyes: sweeping cameras, timed laser
+// beams and smoke clouds. Each system reports "is the thief seen / did a
+// beam break" to game.js, which turns sightings into alarm.
 
-import { TILE } from './config.js';
-import { hasLineOfSight, pointInShadow } from './level.js';
+import { CAMERA, DETECTION, LASER } from './config.js';
+import { CAMERAS, LASERS, angleDiff, crossedSegment, dist, inShadow, los } from './level.js';
 
-export const CAMERA_HALF_ANGLE = 0.5;
-export const LOCKDOWN_SECONDS = 45;
-export const LASER_ALARM = 35;
-
-export function createSecurity(level) {
-  return {
-    cameras: level.cameras.map((c) => ({
-      ...c,
-      x: (c.x + 0.5) * TILE,
-      y: (c.y + 0.5) * TILE,
-      angle: c.base,
-      dir: 1,
-      seenAt: -10,
-      tripped: false,
-    })),
-    lasers: level.lasers.map((l) => ({ ...l, trippedAt: -10 })),
-    empFlashAt: -10,
-  };
+export function makeCameras() {
+  return CAMERAS.map((c) => ({ ...c, angle: c.base, fill: 0, sees: false }));
 }
 
-// A camera sweeps back and forth around its base angle.
-export function updateCameras(game, dt) {
-  const sec = game.security;
-  const now = game.time;
-  const p = game.player;
-  for (const cam of sec.cameras) {
-    cam.angle += cam.dir * cam.speed * dt;
-    if (cam.angle > cam.base + cam.sweep) { cam.angle = cam.base + cam.sweep; cam.dir = -1; }
-    if (cam.angle < cam.base - cam.sweep) { cam.angle = cam.base - cam.sweep; cam.dir = 1; }
+export function makeLasers() {
+  return LASERS.map((l) => ({ ...l, on: true, disabledFor: 0 }));
+}
 
-    if (now < p.empUntil) continue; // EMP: cameras are dark
-    if (now < p.smokeUntil) continue;
-    const dx = p.x - cam.x;
-    const dy = p.y - cam.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > cam.range * TILE) continue;
-    let ang = Math.atan2(dy, dx) - cam.angle;
-    while (ang > Math.PI) ang -= Math.PI * 2;
-    while (ang < -Math.PI) ang += Math.PI * 2;
-    if (Math.abs(ang) > CAMERA_HALF_ANGLE) continue;
-    if (!hasLineOfSight(game.level, cam.x, cam.y, p.x, p.y, game.openTiles)) continue;
-    if (pointInShadow(game.level, p.x, p.y)) continue; // shadows hide the thief
-    // Seen! Alarm climbs fast while a camera holds the thief in its cone.
-    game.alarm = Math.min(100, game.alarm + 42 * dt);
-    if (now - cam.seenAt > 1.2) {
-      cam.seenAt = now;
-      game.audio.cameraBeep();
-    }
-    if (!cam.tripped) {
-      cam.tripped = true;
-      game.flash('Camera has you! Break its line of sight!');
+export function laserOn(laser, t) {
+  if (laser.disabledFor > 0) return false;
+  const ph = (t + laser.phase) % laser.period;
+  return ph < laser.onTime;
+}
+
+// Is (px, py) inside the observer's cone with a clear line of sight?
+export function inCone(ox, oy, angle, px, py, length, halfAngle, doorSegs) {
+  const d = dist(ox, oy, px, py);
+  const reach = inShadow(px, py) ? length * 0.78 : length;
+  if (d > reach || d < 1) return 0;
+  const want = Math.atan2(py - oy, px - ox);
+  const off = Math.abs(angleDiff(want, angle));
+  if (off > halfAngle) return 0;
+  if (!los(ox, oy, px, py, doorSegs)) return 0;
+  // strength: 1 at the centre of the cone, close up; fades with range/angle
+  return (1 - d / reach) * 0.6 + (1 - off / halfAngle) * 0.4;
+}
+
+export function updateCameras(G, dt) {
+  let anySees = false;
+  for (const cam of G.cameras) {
+    cam.angle = cam.base + Math.sin(G.time * CAMERA.sweepSpeed + cam.x) * 0.62;
+    if (G.disabledFor > 0 || G.smokeAt(cam)) { cam.sees = false; cam.fill = Math.max(0, cam.fill - dt); continue; }
+    const s = inCone(cam.x, cam.y, cam.angle, G.player.x, G.player.y,
+      CAMERA.coneLength, CAMERA.coneHalfAngle, G.doorSegs());
+    cam.sees = s > 0;
+    if (s > 0) {
+      const rate = DETECTION.cameraRate * s * (inShadow(G.player.x, G.player.y) ? DETECTION.shadowFactor : 1);
+      cam.fill = Math.min(1, cam.fill + rate * dt);
+      if (cam.fill > 0.45) {
+        G.raiseAlarm(DETECTION.alarmFromCamera * s * dt, 'camera');
+        G.alertNearestGuard(G.player.x, G.player.y, 0.45);
+        anySees = true;
+      }
+    } else {
+      cam.fill = Math.max(0, cam.fill - dt * 0.7);
     }
   }
-  for (const cam of sec.cameras) {
-    if (cam.tripped && now - cam.seenAt > 2) cam.tripped = false;
-  }
+  return anySees;
 }
 
-// Is this laser beam live right now? Beams blink on a shared 3s cycle.
-export function laserLive(laser, now) {
-  const cycle = laser.on + laser.off;
-  const t = (now + laser.phase) % cycle;
-  return t < laser.on;
-}
-
-export function updateLasers(game, dt) {
-  const sec = game.security;
-  const now = game.time;
-  const p = game.player;
-  for (const l of sec.lasers) {
-    const live = laserLive(l, now);
-    if (!live) continue;
-    const yPx = l.y * TILE;
-    const x0 = l.x0 * TILE;
-    const x1 = l.x1 * TILE;
-    // The thief trips the beam when their body crosses its line.
-    if (p.y + p.r > yPx - 2 && p.y - p.r < yPx + 2 && p.x > x0 && p.x < x1) {
-      if (now - l.trippedAt > 1.5) {
-        l.trippedAt = now;
-        game.alarm = Math.min(100, game.alarm + LASER_ALARM);
-        game.audio.laserZap();
-        game.flash('Laser tripped! +35 alarm');
-        game.onLaserTrip(l);
+export function updateLasers(G, dt, prevX, prevY) {
+  for (const laser of G.lasers) {
+    laser.disabledFor = Math.max(0, laser.disabledFor - dt);
+    laser.on = laserOn(laser, G.time);
+    if (!laser.on || G.dial.open) continue;
+    if (crossedSegment(prevX, prevY, G.player.x, G.player.y, laser.x1, laser.y1, laser.x2, laser.y2)) {
+      // stepping back and forth over one beam should not machine-gun the alarm
+      if (G.time - (laser.lastTrip || -9) > 1.2) {
+        laser.lastTrip = G.time;
+        G.raiseAlarm(LASER.tripAlarm, 'laser');
+        G.onLaserTrip();
       }
     }
   }
 }
 
-// Alarm decay and lockdown. Returns 'lockdown' the frame the alarm hits 100.
-export function updateAlarm(game, dt) {
-  if (game.lockdown) {
-    game.lockdownLeft -= dt;
-    if (game.lockdownLeft <= 0) {
-      game.onLockdownTimeout();
-    }
-    return;
-  }
-  // The alarm cools slowly when nothing is feeding it.
-  game.alarm = Math.max(0, game.alarm - 1.6 * dt);
-  if (game.alarm >= 100) {
-    game.lockdown = true;
-    game.lockdownLeft = LOCKDOWN_SECONDS;
-    game.audio.alarm();
-    game.flash('LOCKDOWN! 45 seconds — every guard is hunting you. RUN!');
-    // Every guard converges on the thief's last seen spot.
-    for (const g of game.guards) {
-      g.state = 'chase';
-      g.lastSeen = { x: game.player.x, y: game.player.y, at: game.time };
-    }
-  }
+export function fireEMP(G) {
+  G.disabledFor = LASER.empDisableSeconds;
+  for (const laser of G.lasers) laser.disabledFor = LASER.empDisableSeconds;
 }
